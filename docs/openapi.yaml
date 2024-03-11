@@ -1,0 +1,170 @@
+openapi: 3.0.3
+info:
+  title: Open API Spec
+  version: 0.1.0
+paths:
+  /v1/account/validate:
+    get:
+      description: 'Account Validation'
+      parameters:
+        - in: query
+          name: account_number
+          schema:
+            type: string
+          required: true
+        - in: query
+          name: bank_code
+          schema:
+            type: string
+            enum:
+              - BCA
+              - BRI
+              - BNI
+              - MANDIRI
+          required: true
+      responses:
+        '200':
+          description: 'Account validated'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountValidation'
+        '404':
+          description: 'Account is not found'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/transfer:
+    post:
+      description: 'Transfer money'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              required:
+                - merchantId
+                - amount
+                - referenceId
+                - destinationAccountNumber
+                - bankCode
+              type: object
+              properties:
+                merchantId:
+                  type: string
+                amount:
+                  type: integer
+                account_number:
+                  type: string
+                referenceId:
+                  type: string
+                bankCode:
+                  type: string
+                  enum:
+                    - BCA
+                    - BRI
+                    - BNI
+                    - MANDIRI
+      responses:
+        '200':
+          description: 'Transfer processed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transfer'
+  /v1/callback/transfer:
+    post:
+      description: 'Callback transfer endpoint '
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              required:
+                - referenceId
+                - status
+              type: object
+              properties:
+                referenceId:
+                  type: string
+                status:
+                  type: string
+                  enum:
+                    - SUCCESS
+                    - FAILED
+      responses:
+        '200':
+          description: 'Callback transfer acknowledged'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CallbackResponse'
+
+components:
+  schemas:
+    AccountValidation:
+      required:
+        - accountNumber
+        - accountName
+      type: object
+      properties:
+        accountNumber:
+          type: string
+        accountName:
+          type: string
+        bankCode:
+          type: string
+    Transfer:
+      type: object
+      required:
+        - transferId
+        - merchantId
+        - merchantRefId
+        - status
+        - destinationAccountNumber
+        - amount
+        - bankCode
+      properties:
+        transferId:
+          type: string
+        merchantId:
+          type: string
+        merchantRefId:
+          type: string
+        status:
+          type: string
+          enum:
+            - INITIATE
+            - PENDING
+            - SUCCESS
+            - FAILED
+        destinationAccNumber:
+          type: string
+        amount:
+          type: integer
+        bankCode:
+          type: string
+        bankRefId:
+          type: string
+        created:
+          type: string
+          format: date-time
+        updated:
+          type: string
+          format: date-time
+    CallbackResponse:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+
+    ErrorResponse:
+      required:
+        - error
+      type: object
+      properties:
+        error:
+          type: string
