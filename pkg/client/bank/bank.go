@@ -97,6 +97,9 @@ func (c Client) CheckTransferStatus(ctx context.Context, bankRefId *string) (sta
 	src := rand.NewSource(time.Now().UnixNano())
 	r := rand.New(src)
 	chance := r.Intn(100)
+
+	time.Sleep(1 * time.Second) // mock as latency
+
 	if chance < 80 {
 		return model.TransferStatusSuccess
 	} else if chance < 90 {
