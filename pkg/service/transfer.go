@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/google/uuid"
+	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
 	"log"
 	"sync"
@@ -68,18 +69,32 @@ func (s *TransferService) Transfer(ctx context.Context, req model.TransferReqBod
 		return nil, standarderrors.InsufficientBalance
 	}
 
-	newTransfer, err := s.createTransfer(ctx, req, *destinationBankAccountDetail, tx)
-	if err != nil {
-		return nil, err
-	}
-
 	err = s.merchantRepository.UpdateBalance(ctx, req.MerchantId, newBalance, tx)
 	if err != nil {
 		log.Printf("Failed to UpdateBalance for merchant with id %v, error: %v", req.MerchantId, err)
 		return nil, err
 	}
 
-	if err = s.publisher.Publish(ctx, newTransfer, "bank-transfer-request"); err != nil {
+	newTransfer, err := s.createTransfer(ctx, req, *destinationBankAccountDetail, tx)
+	if err != nil {
+		return nil, err
+	}
+
+	// create credit ledger
+	timestamp := time.Now()
+	newEntry := model.Ledger{
+		Id:         uuid.New().String(),
+		MerchantId: newTransfer.MerchantId,
+		TransferId: newTransfer.Id,
+		Credit:     newTransfer.Amount,
+		Created:    timestamp,
+		Updated:    timestamp,
+	}
+	if err := s.ledgerRepository.Create(ctx, &newEntry, tx); err != nil {
+		return nil, err
+	}
+
+	if err = s.publisher.Publish(ctx, newTransfer, sqs.BankTransferRequest); err != nil {
 		return nil, err
 	}
 
@@ -91,6 +106,24 @@ func (s *TransferService) Transfer(ctx context.Context, req model.TransferReqBod
 		DestinationAccountNumber: newTransfer.DestinationAccNumber,
 		Amount:                   newTransfer.Amount,
 		BankCode:                 newTransfer.BankCode,
+	}, nil
+}
+
+func (s *TransferService) GetTransfer(ctx *fasthttp.RequestCtx, id string) (*model.TransferResBody, error) {
+	transfer, err := s.transferRepository.GetById(ctx, id)
+	if err != nil {
+		log.Printf("Error getting transfer by ID: %v", err)
+		return nil, standarderrors.NotFound
+	}
+
+	return &model.TransferResBody{
+		TransferId:               transfer.Id,
+		MerchantId:               transfer.MerchantId,
+		MerchantRefId:            transfer.MerchantRefId,
+		Status:                   transfer.Status,
+		DestinationAccountNumber: transfer.DestinationAccNumber,
+		Amount:                   transfer.Amount,
+		BankCode:                 transfer.BankCode,
 	}, nil
 }
 
@@ -141,7 +174,7 @@ func (s *TransferService) TransferStatusCheck(ctx context.Context, days int, lim
 				return
 			}
 
-			if err = s.publisher.Publish(ctx, tf, "record-transaction"); err != nil {
+			if err = s.publisher.Publish(ctx, tf, sqs.RecordTransaction); err != nil {
 				log.Printf("failed to publish transaction: %v", err)
 			}
 		}(tf)
@@ -159,7 +192,8 @@ func (s *TransferService) HandleTransferCallback(ctx context.Context, req model.
 		return nil, err
 	}
 	transfer.Status = req.Status
-	if err = s.publisher.Publish(ctx, transfer, "record-transaction"); err != nil {
+
+	if err = s.publisher.Publish(ctx, transfer, sqs.RecordTransaction); err != nil {
 		log.Printf("failed to publish transaction: %v", err)
 		return nil, err
 	}
@@ -196,7 +230,12 @@ func (s *TransferService) startAndManageTransaction() *gorm.DB {
 	return tx
 }
 
-func (s *TransferService) createTransfer(ctx context.Context, req model.TransferReqBody, destination model.ValidateAccountResBody, tx *gorm.DB) (*model.Transfer, error) {
+func (s *TransferService) createTransfer(
+	ctx context.Context,
+	req model.TransferReqBody,
+	destination model.ValidateAccountResBody,
+	tx *gorm.DB,
+) (*model.Transfer, error) {
 	timestamp := time.Now()
 	newTransfer := model.Transfer{
 		Id:                   uuid.New().String(),
@@ -240,19 +279,18 @@ func (s *TransferService) processTransaction(ctx context.Context, transfer model
 		}
 		return err
 	}
+
 	if t.Status != model.TransferStatusPending {
 		log.Println("Ignore non pending status")
 		return nil
 	}
+
 	if transfer.Status == model.TransferStatusFailed {
 		if err := s.processFailedTransaction(ctx, t, tx); err != nil {
 			return err
 		}
-	} else {
-		if err := s.processSuccessTransaction(ctx, t, tx); err != nil {
-			return err
-		}
 	}
+	// else, transfer status success
 	t.Status = transfer.Status
 	return s.transferRepository.Update(ctx, t, tx)
 }
@@ -275,30 +313,29 @@ func (s *TransferService) commitOrRollBack(tx *gorm.DB, err error) {
 	}
 }
 
+// processFailedTransaction processes a failed transaction by creating a debit ledger and reverting the merchant's balance.
 func (s *TransferService) processFailedTransaction(ctx context.Context, transfer *model.Transfer, tx *gorm.DB) error {
 	m, err := s.merchantRepository.GetAndLock(ctx, "UPDATE", transfer.MerchantId, tx)
 	if err != nil {
 		return err
 	}
-	// restore balance when failed
-	transfer.Status = model.TransferStatusFailed
-	newBalance := m.Balance + transfer.Amount
-	err = s.merchantRepository.UpdateBalance(ctx, m.Id, newBalance, tx)
-
-	return err
-}
-
-func (s *TransferService) processSuccessTransaction(ctx context.Context, transfer *model.Transfer, tx *gorm.DB) error {
-	transfer.Status = model.TransferStatusSuccess
+	// create debit ledger
 	timestamp := time.Now()
 	newEntry := model.Ledger{
 		Id:         uuid.New().String(),
 		MerchantId: transfer.MerchantId,
 		TransferId: transfer.Id,
-		Credit:     transfer.Amount,
-		Debit:      0,
+		Debit:      transfer.Amount,
 		Created:    timestamp,
 		Updated:    timestamp,
 	}
-	return s.ledgerRepository.Create(ctx, &newEntry, tx)
+	if err := s.ledgerRepository.Create(ctx, &newEntry, tx); err != nil {
+		return err
+	}
+
+	transfer.Status = model.TransferStatusFailed
+	newBalance := m.Balance + transfer.Amount
+	err = s.merchantRepository.UpdateBalance(ctx, m.Id, newBalance, tx)
+
+	return err
 }

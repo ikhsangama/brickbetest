@@ -36,6 +36,18 @@ func (r *TransferRepository) GetByReferenceId(ctx context.Context, merchantId st
 	return result, nil
 }
 
+func (r *TransferRepository) GetById(ctx context.Context, transferId string) (result *model.Transfer, err error) {
+	result = &model.Transfer{}
+	if err := r.db.WithContext(ctx).Where("id=?", transferId).First(result).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, standarderrors.NotFound
+		}
+		return nil, err
+	}
+
+	return result, nil
+}
+
 func (r *TransferRepository) Create(ctx context.Context, transfer *model.Transfer, tx *gorm.DB) error {
 	executor := r.db
 	if tx != nil {

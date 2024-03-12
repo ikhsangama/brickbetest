@@ -73,6 +73,22 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Transfer'
+  /v1/transfer/{id}:
+    get:
+      description: 'Get transfer'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 'Transfer processed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transfer'
   /v1/callback/transfer:
     post:
       description: 'Callback transfer endpoint '

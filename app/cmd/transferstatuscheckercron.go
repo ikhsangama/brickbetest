@@ -20,7 +20,7 @@ func StartTransferStatusCheckerCron() {
 		if err != nil {
 			fmt.Printf("failed to check transfer status %v", err)
 		}
-		log.Println("Transfer status checker finished.")
+		log.Println("TransferRequest status checker finished.")
 	})
 	if err != nil {
 		return

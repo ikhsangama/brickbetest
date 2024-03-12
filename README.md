@@ -35,15 +35,15 @@
   - Actor: Merchant Owner
   - Preconditions: User's and destination account is validated and the system has access to Bank / External API.
   - Main Flow: User input the amount and account detail that they are going to transfer. The system will deduct the balance of the merchant that stored to the system when it's done.
-  - Alternative Flow: If the money transfer fails or destination account is not exist, inform the user to check the input data.
+  - Alternative Flow: If the destination account is not exist, inform the user to check the input data.
   - Post-conditions: Transaction either is done or failed, and the result of the transaction is stored in the system.
 
 ### 3. Receive Transaction Status Callback
   - Actor: System
-  - Preconditions: A transaction request has been made and the system awaits the response from Bank / External API.
+  - Preconditions: A transfer request has been made and the system awaits the response from Bank / External API.
   - Main Flow: The external API sends the transaction status to the system's callback endpoint. The system updates the transaction record and ledger based on the received callback status.
-  - Alternative Flow: If the callback information is not received within a certain timeframe, the system should repeat the request or handle this situation according to the business rules.
-  - Post-conditions: The transaction status has been handled and recorded in the system.
+  - Alternative Flow: If the callback information is not received within a certain timeframe, the system should repeatedly check the request status or handle this situation according to the business rules.
+  - Post-conditions: The transfer status has been handled and recorded in the system.
 
 ## Requirement Categories
 ### Data Management
@@ -53,8 +53,8 @@
 - ![img.png](img.png)
 
 #### 2. Data Validation
-- The system should validate any user-entered data to ensure it's correctness and completeness before storing it in the database.
-- As a system, I validate user input data in multiple layer and also in OpenAPI specification
+- The system should validate any user-entered data to ensure its correctness and completeness before storing it in the database.
+- As a system, I validate user input data in multiple layer and also in OpenAPI specification.
 
 ### Integration Flow
 #### 1. Account Validation
@@ -73,54 +73,61 @@ P->>-M: Bank Account Validated
 ```
 
 #### 2. Transfer
-![img_5.png](img_5.png)
+![img_2.png](img_2.png)
 
 ```mermaid
 sequenceDiagram
-  participant M as Merchant
-  participant S as Server
-  participant B as Bank
-  participant D as Database
-  participant Q as SQS
-  participant W as BankTrfReqWorker
-  participant W2 as RecordTxnWorker
-  participant W3 as StatusCheckerCron
+    participant M as Merchant
+    participant S as Server
+    participant B as Bank
+    participant D as Database
+    participant Q as SQS
+    participant W as BankTrfReqWorker
+    participant W2 as RecordTxnWorker
+    participant W3 as StatusCheckerCron
 
-  M->>+S: Request transfer
-  S->>+B: Bank Account Validate
-  B-->>-S: Validated
-  S->>+D: Get and lock merchant balance
-  D-->>-S: Merchant balance received
-  S->>+D: Deduct merchant balance
-  D-->>-S: Merchant balance deducted
-  S->>+D: Create transfer status INITIATE
-  D-->>-S: Transfer created
-  S-->>Q: Publish to bank transfer request queue
-  S-->>D: Transfer committed
-  S-->>-M: Response request transfer initiated
-  Q-->>W: Consume msg transfer INITIATE
-  W->>+D: Get and lock transfer
-  D->>-W: Data transfer received and locked
-  W->>+B: Handle bank transfer request
-  B->>-W: Transfer request created with status PENDING
-  W->>+D: Update transfer status to PENDING
-  D->>-W: Transfer updated
-  W-->>D: Transfer commit
-  B->>+S: Callback received
+    M->>+S: Request transfer
+    S->>+B: Bank Account Validate
+    B-->>-S: Validated
+    S->>+D: Get and lock merchant balance
+    D-->>-S: Merchant balance received
+    S->>+D: Deduct merchant balance
+    D-->>-S: Merchant balance deducted
+    S->>+D: Create transfer status INITIATE
+    D-->>-S: Transfer created
+    S->>+D: Create credit ledger transaction
+    D-->>-S: ledger created
+    S-->>Q: Publish to bank transfer request queue
+    S-->>D: Transfer committed
+    S-->>-M: Response request transfer initiated
+
+    Q-->>W: Consume msg transfer INITIATE
+    W->>+D: Get and lock transfer
+    D->>-W: Data transfer received and locked
+    W->>+B: Handle bank transfer request
+    B->>-W: Transfer request created with status PENDING
+    W->>+D: Update transfer status to PENDING
+    D->>-W: Transfer updated
+    W-->>D: Transfer commit
+    B->>+S: Callback received
     loop Every minute
         W3->>+B: Check pending transfer request status
         B-->>-W3: Transfer request status received
     end
-  S-->>Q: Publish to record transaction queue
-  S-->>-B: Ack
-  Q-->>W2: Consume msg transfer PENDING
-  W2->>+D: Get and lock transfer
-  D-->>-W2: Data transfer received and locked
-  W2->>+D: Create ledger transaction
-  D-->>-W2: Ledger transaction created
-  W2->>+D: Update transfer status to SUCCESS
-  D->>-W2: Transfer updated
-  W2-->>D: Transfer commit
+    S-->>Q: Publish to record transaction queue
+    S-->>-B: Ack
+    Q-->>W2: Consume msg transfer PENDING
+    W2->>+D: Get and lock transfer
+    D-->>-W2: Data transfer received and locked
+    alt Transfer status is FAILED
+        W2->>+D: Create debit ledger transaction
+        D-->>-W2: Ledger transaction created
+        W2->>+D: Reverting merchant balance
+        D-->>-W2: Merchant balance reverted
+    end
+    W2->>+D: Update transfer status to FAILED / SUCCESS
+    D->>-W2: Transfer updated
+    W2-->>D: Transfer commit
 ```
 # Non-Functional Requirement
 - Scalable system to adapt when traffic is significantly high
@@ -144,7 +151,7 @@ sequenceDiagram
    - Hit POST http://localhost:8080/v1/transfer
    - Consumer fail to process transfer to bank temporary
    - In the halfway, change mock endpoint data of transfer endpoint to half-empty
-   - Consumer successfully process transfer to bank
+   - Consumer eventually successful process transfer to bank
 ### 5. Bank never send the callback
    - Hit POST http://localhost:8080/v1/transfer
    - Make sure `transfer status checker cron` is running
